@@ -2,9 +2,13 @@ package net.corda.plugins
 
 import net.corda.plugins.SignJar.Companion.sign
 import net.corda.plugins.Utils.Companion.compareVersions
-import org.gradle.api.*
+import org.gradle.api.GradleException
+import org.gradle.api.InvalidUserDataException
+import org.gradle.api.Plugin
+import org.gradle.api.Project
 import org.gradle.api.artifacts.Configuration
 import org.gradle.api.artifacts.Dependency
+import org.gradle.api.artifacts.ProjectDependency
 import org.gradle.api.java.archives.Attributes
 import org.gradle.api.model.ObjectFactory
 import org.gradle.api.plugins.JavaPlugin
@@ -79,7 +83,12 @@ class CordappPlugin @Inject constructor(private val objects: ObjectFactory): Plu
         }
 
         cordappTask.doLast {
-            jarTask.from(getDirectNonCordaDependencies(project).map { file ->
+            val sourceFiles: Set<File> = if (cordapp.multiModuleFilter) {
+                getMultiModuleFilteredNonCordaDependencies(project)
+            } else {
+                getDirectNonCordaDependencies(project)
+            }
+            jarTask.from(sourceFiles.map { file ->
                 it.logger.info("CorDapp dependency: ${file.name}")
                 project.zipTree(file)
             }).apply {
@@ -189,6 +198,45 @@ class CordappPlugin @Inject constructor(private val objects: ObjectFactory): Plu
             }
         }
         return filteredDeps.toUniqueFiles(runtimeConfiguration) - excludeDeps.toUniqueFiles(runtimeConfiguration)
+    }
+
+    private fun getMultiModuleFilteredNonCordaDependencies(project: Project): Set<File> {
+        project.logger.info("Finding and filtering non-corda dependencies for inclusion in CorDapp JAR")
+        val configName = "runtimeClasspath"
+        val files = mutableSetOf<File>()
+        project.configuration(configName).allDependencies.forEach {
+            resolveDependency(it, project, configName, files)
+        }
+        return files
+    }
+
+    private fun resolveDependency(dependency: Dependency, project: Project, configName: String, files: MutableSet<File>) {
+        if (dependency is ProjectDependency) {
+            val projectFiles = project.configuration(configName).files(dependency)
+            val projectJarFile = projectFiles.find { it.name.contains(dependency.name) }
+            if (projectJarFile != null) {
+                files.add(projectJarFile)
+            } else {
+                // Try to fetch the jar directly
+                dependency.dependencyProject.getTasksByName("jar", false).first().outputs.files.singleFile
+                val jarTasks = dependency.dependencyProject.getTasksByName("jar", false)
+                if (jarTasks.size > 0) {
+                    val jarFile = jarTasks.first().outputs.files.singleFile
+                    files.add(jarFile)
+                }
+            }
+            val dependencyProject = dependency.dependencyProject
+            val projectConfigurationDependencies = dependencyProject.configuration(configName).allDependencies
+            val filteredDeps = projectConfigurationDependencies.filter { dep ->
+                hardCodedExcludes().none { exclude -> (exclude.first == dep.group) && (exclude.second == dep.name) }
+            }
+            filteredDeps.forEach {
+                resolveDependency(it, project, configName, files)
+            }
+        } else {
+            val dependencyFiles = project.configuration(configName).files(dependency)
+            files.addAll(dependencyFiles)
+        }
     }
 
     private fun checkPlatformVersionInfo(): Pair<Int, Int> {

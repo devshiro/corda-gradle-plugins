@@ -18,6 +18,12 @@ open class CordappExtension @Inject constructor(objectFactory: ObjectFactory)  {
     var minimumPlatformVersion: Int? = null
 
     /**
+     * Enables recursive dependency filtering in multi-module projects
+     */
+    @get:Input
+    var multiModuleFilter: Boolean = false
+
+    /**
      * CorDapp distribution information (deprecated)
      */
     @Deprecated("Use top-level attributes and specific Contract and Workflow info objects")
